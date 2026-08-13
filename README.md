@@ -74,21 +74,24 @@ mcsadmin install --with-java    # latest release + compatible JRE if needed
 mcsadmin                        # launch the TUI
 ```
 
-Inside the TUI, press `s` to start the server. That's it.
+Inside the TUI, press `S` to start the server. That's it.
 
 ### TUI control
 
 | Key             | Action                                  |
 |-----------------|-----------------------------------------|
-| `s`             | start the server                        |
-| `x` / `r`       | stop / restart the server               |
-| `i`             | install the latest release build        |
-| `I`             | interactive version picker              |
-| `e`             | server settings (description / icon / RAM / cores) — requires server stopped |
-| `w`             | world options (difficulty, gamemode, pvp, …) — requires server stopped |
+| `S`             | start the server                        |
+| `X` / `R`       | stop / restart the server               |
+| `I`             | install the latest release build        |
+| `V`             | pick a version to install               |
+| `E`             | server settings (description / icon / RAM / cores) — requires server stopped |
+| `W`             | world options (difficulty, gamemode, pvp, …) — requires server stopped |
 | `PgUp` / `PgDn` | scroll the console                      |
-| `h`             | show key bindings and local commands    |
-| `q`             | quit (stops the server first)           |
+| `H`             | show key bindings and local commands    |
+| `Q`             | quit (stops the server first)           |
+
+All shortcuts are **UPPERCASE** so any lowercase text you type goes straight
+to the server console instead of triggering a hotkey.
 
 Any other text + `Enter` is sent straight to the Minecraft server console.
 Local control commands start with `/`: `/start`, `/stop`, `/restart`,
@@ -97,7 +100,7 @@ Local control commands start with `/`: `/start`, `/stop`, `/restart`,
 ### Server icon
 
 The vanilla client only shows a `server-icon.png` that is exactly 64x64.
-From the settings screen (`e`) you can cycle discovered images or type/paste
+From the settings screen (`E`) you can cycle discovered images or type/paste
 a path directly into the icon field — MCSAdmin resizes any PNG to 64x64 in
 pure Python and writes a valid icon into the server directory. Because the
 icon pipeline itself is PNG-native, ImageMagick is **optional**: install it
@@ -146,12 +149,13 @@ Clicking a player opens a menu with `Kick player`, `Ban player` and
 ### Whitelist
 
 The whitelist editor lives in **World Options** (`W`), as the `whitelist`
-row — pressing **Enter**/**Right arrow** on it opens the current list, an
-`Add` button that prompts for a name (`whitelist add`), and a click on any
-listed name removes it (`whitelist remove`). The row is marked with a
-trailing `>` while the whitelist is active (`white-list: true`) and shows
-plain `whitelist` without one when it isn't. ESC steps back to the World
-Options list.
+row — **click it** (or press **Enter**/**Right arrow**) to open the current
+list, with an `Add` button that prompts for a name (`whitelist add`) and a
+**Disable whitelist**/**Enable whitelist** button that flips `white-list` in
+`server.properties` without touching the entries. A click on any listed name
+removes it (`whitelist remove`). The row is marked with a trailing `>` while
+the whitelist is active (`white-list: true`) and shows plain `whitelist`
+without one when it isn't. ESC steps back to the World Options list.
 
 ### Server settings, RAM / cores and world options
 
@@ -171,7 +175,7 @@ Its `desc` / `icon` fields work as above, plus one sub-menu:
   server image (it no longer reverts when the icon isn't among the images
   auto-discovered for cycling).
 
-World options have their **own key, `W`** (a `[w] world` entry no longer
+World options have their **own key, `W`** (a `[W] world` entry no longer
 hides inside server settings):
 
 - difficulty (peaceful/easy/normal/hard), gamemode, max players, view
