@@ -286,6 +286,39 @@ cd MCSAdmin
 python3 -m pip install --user --break-system-packages -e .
 ```
 
+## Updating
+
+MCSAdmin ships as one Python package, so updating is just re-installing the
+latest commit from GitHub:
+
+```sh
+# re-run the same install command; pip pulls the newest code
+python3 -m pip install --user --break-system-packages git+https://github.com/Polaricito/MCSAdmin.git
+```
+
+The `--user` cache is keyed by version, and the git source changes on every
+push, so force a fresh fetch + install to be sure you're on the newest code:
+
+```sh
+python3 -m pip install --user --break-system-packages \
+  --upgrade --force-reinstall \
+  git+https://github.com/Polaricito/MCSAdmin.git
+```
+
+If you installed a specific tag, add `@vX.Y.Z` to the URL and drop
+`--force-reinstall` for the same version.
+
+Editable installs (development) update with a plain `git pull` inside the
+checkout:
+
+```sh
+cd MCSAdmin
+git pull
+```
+
+Your server data and config (`~/.config/mcsadmin/`) are untouched by updates.
+Check your current version any time with `mcsadmin --version`.
+
 ## Development
 
 ```sh
