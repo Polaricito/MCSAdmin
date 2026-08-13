@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcsadmin"
+version = "1.0.0"
+description = "Terminal-based Minecraft server manager with a curses TUI"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "MCSAdmin contributors" }]
+requires-python = ">=3.8"
+keywords = ["minecraft", "server", "tui", "terminal", "server-manager"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games :: Multi-User Dungeons (MUD)",
+    "Topic :: System :: Monitoring",
+]
+
+[project.scripts]
+mcsadmin = "mcsadmin.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Polaricito/MCSAdmin"
+Source = "https://github.com/Polaricito/MCSAdmin"
+"Bug Tracker" = "https://github.com/Polaricito/MCSAdmin/issues"
+
+[tool.setuptools.packages.find]
+include = ["mcsadmin*"]
