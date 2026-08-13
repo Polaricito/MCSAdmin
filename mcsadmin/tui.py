@@ -258,7 +258,6 @@ WORLD_FIELDS = [
     ("spawn-protection", "spawn protection (radius)", "int"),
     ("generate-structures", "generate structures", "bool"),
     ("allow-flight", "allow flight", "bool"),
-    ("white-list", "white-list", "bool"),
     ("online-mode", "online mode", "bool"),
     ("whitelist", "whitelist", "action"),
 ]

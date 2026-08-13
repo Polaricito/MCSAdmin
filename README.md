@@ -176,7 +176,7 @@ hides inside server settings):
 
 - difficulty (peaceful/easy/normal/hard), gamemode, max players, view
   distance, pvp, hardcore, spawn monsters / animals, command blocks, spawn
-  protection, structures, flight, white-list and **online mode**. Set
+  protection, structures, flight and **online mode**. Set
   `online mode` to `false` for an **offline** server — players join
   without a Mojang account — instead of the default `true`. Cycle choices
   with Enter, type numbers for the numeric fields, and reach `done` below
