@@ -575,6 +575,47 @@ class TestFieldModal(unittest.TestCase):
             "Enable whitelist",
         )
 
+    def test_click_on_whitelist_row_opens_editor(self):
+        # the whitelist row in World Options is clickable: the mouse hitmap
+        # maps its cell to "field:<idx>", which must open the editor
+        from mcsadmin.tui import FieldModal, WhitelistModal, WORLD_FIELDS
+
+        with tempfile.TemporaryDirectory() as d:
+            app = self._app(d)
+            app.config.set("server_dir", d)
+            m = FieldModal(" WORLD OPTIONS ", WORLD_FIELDS, {}, lambda v: None)
+            app.modal = m
+            idx = [k for k, _l, _t in WORLD_FIELDS].index("whitelist")
+            app._dispatch_click(f"field:{idx}")
+            self.assertIsInstance(app.modal, WhitelistModal)
+            self.assertIs(app.prev_modal, m)
+
+    def test_click_in_whitelist_editor_dispatches(self):
+        from mcsadmin.tui import WhitelistModal
+
+        with tempfile.TemporaryDirectory() as d:
+            app = self._app(d)
+            app.config.set("server_dir", d)
+            sent = []
+            app.server = type(
+                "S",
+                (),
+                {"proc": type("P", (), {"poll": lambda self: None})(),
+                 "rcon_command": lambda self, cmd: "There are 2 whitelisted players: Alex, Steve",
+                 "send_command": lambda self, cmd: sent.append(cmd)},
+            )()
+            m = WhitelistModal(app._whitelist_query)
+            m._load()
+            app.modal = m
+            app._dispatch_click("whitelist-remove:Alex")
+            self.assertIn("whitelist remove Alex", sent)
+            app._dispatch_click("whitelist-add")
+            self.assertTrue(m.editing)
+            app._dispatch_click("whitelist-toggle")
+            self.assertEqual(m.enabled, False)
+            app._dispatch_click("close")
+            self.assertIsNone(app.modal)
+
     def test_ipban_uses_player_connection_ip(self):
         from mcsadmin.tui import PlayerActions
 
