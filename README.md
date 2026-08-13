@@ -29,9 +29,6 @@ checkout.
 - **Console commands** — type straight into the server console, or use local
   commands such as `/stop`, `/restart`, `/players`, `/help`.
 
-<img width="950" alt="image" src="https://github.com/user-attachments/assets/f1c940ac-da37-4ea7-b69d-a121321676a3" />
-
-
 ## Requirements
 
 - Linux (reads `/proc`)
