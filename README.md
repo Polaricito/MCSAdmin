@@ -54,10 +54,10 @@ instead of the system Python. On those the `mcsadmin` command lands in
 
 ```sh
 # bash / zsh
-export PATH="$PATH:/home/meowl/.local/bin"
+export PATH="$PATH:$HOME/.local/bin"
 
 # fish
-set -U fish_user_paths /home/meowl/.local/bin
+set -U fish_user_paths "$HOME/.local/bin"
 ```
 
 Arch users: install straight from this repository —
@@ -276,10 +276,10 @@ command in `~/.local/bin` — add it to your `PATH` if the command isn't found:
 
 ```sh
 # bash / zsh
-export PATH="$PATH:/home/meowl/.local/bin"
+export PATH="$PATH:$HOME/.local/bin"
 
 # fish
-set -U fish_user_paths /home/meowl/.local/bin
+set -U fish_user_paths "$HOME/.local/bin"
 ```
 
 Or clone and install in editable mode for development:
