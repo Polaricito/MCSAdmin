@@ -43,14 +43,27 @@ checkout.
 python3 -m mcsadmin --help
 
 # install as a system command:
-python3 -m pip install .
+python3 -m pip install --user --break-system-packages .
 mcsadmin --help
+```
+
+`--break-system-packages` is required on distros that mark pip as externally
+managed (Arch, recent Debian/Ubuntu) — it installs into your user profile
+instead of the system Python. On those the `mcsadmin` command lands in
+`~/.local/bin`, so make sure it's on your `PATH`:
+
+```sh
+# bash / zsh
+export PATH="$PATH:/home/meowl/.local/bin"
+
+# fish
+set -U fish_user_paths /home/meowl/.local/bin
 ```
 
 Arch users: install straight from this repository —
 
 ```sh
-python3 -m pip install git+https://github.com/Polaricito/MCSAdmin.git
+python3 -m pip install --user --break-system-packages git+https://github.com/Polaricito/MCSAdmin.git
 mcsadmin --help
 ```
 
@@ -246,10 +259,23 @@ straight from a git checkout with no extra steps:
 
 ```sh
 # latest commit on the default branch
-python3 -m pip install git+https://github.com/Polaricito/MCSAdmin.git
+python3 -m pip install --user --break-system-packages git+https://github.com/Polaricito/MCSAdmin.git
 
 # a specific tag
-python3 -m pip install git+https://github.com/Polaricito/MCSAdmin.git@v1.0.0
+python3 -m pip install --user --break-system-packages git+https://github.com/Polaricito/MCSAdmin.git@v1.0.0
+```
+
+The `--user --break-system-packages` combo targets distros with an externally
+managed Python (Arch, recent Debian/Ubuntu); drop the flag if your system
+still allows plain `pip install`. A `--user` install puts the `mcsadmin`
+command in `~/.local/bin` — add it to your `PATH` if the command isn't found:
+
+```sh
+# bash / zsh
+export PATH="$PATH:/home/meowl/.local/bin"
+
+# fish
+set -U fish_user_paths /home/meowl/.local/bin
 ```
 
 Or clone and install in editable mode for development:
@@ -257,7 +283,7 @@ Or clone and install in editable mode for development:
 ```sh
 git clone git@github.com:Polaricito/MCSAdmin.git
 cd MCSAdmin
-python3 -m pip install -e .
+python3 -m pip install --user --break-system-packages -e .
 ```
 
 ## Development
