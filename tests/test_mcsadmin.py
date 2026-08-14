@@ -212,6 +212,7 @@ class TestFieldModal(unittest.TestCase):
             (),
             {"proc": None, "pid": None, "players": set(), "player_ips": {}},
         )()
+        app._dirty = set()
         return app
 
     def test_save_world_options_serializes_and_drops_defaults(self):
@@ -248,6 +249,61 @@ class TestFieldModal(unittest.TestCase):
             props = read_properties(os.path.join(d, "server.properties"))
             self.assertEqual(props.get("difficulty"), "hard")
             self.assertEqual(props.get("max-players"), "20")
+
+    def test_worlds_list_and_switch(self):
+        from mcsadmin.server import read_properties
+        from mcsadmin.tui import WorldsModal
+
+        with tempfile.TemporaryDirectory() as d:
+            app = self._app(d)
+            app.config.set("server_dir", d)
+            for w in ("world", "survival"):
+                os.makedirs(os.path.join(d, w), exist_ok=True)
+                with open(os.path.join(d, w, "level.dat"), "wb") as fh:
+                    fh.write(b"x")
+            os.makedirs(os.path.join(d, "empty"), exist_ok=True)
+            os.makedirs(os.path.join(d, ".hidden"), exist_ok=True)
+            self.assertEqual(app._list_worlds(), ["survival", "world"])
+            # switch writes the level into both config and server.properties
+            m = WorldsModal(app._list_worlds(), app._current_world())
+            app.modal = m
+            app._world_switch(m, "survival")
+            self.assertEqual(app.config.get("level"), "survival")
+            props = read_properties(os.path.join(d, "server.properties"))
+            self.assertEqual(props.get("level-name"), "survival")
+
+    def test_worlds_add_rename_delete(self):
+        from mcsadmin.tui import WorldsModal
+
+        with tempfile.TemporaryDirectory() as d:
+            app = self._app(d)
+            app.config.set("server_dir", d)
+            os.makedirs(os.path.join(d, "alpha"), exist_ok=True)
+            with open(os.path.join(d, "alpha", "level.dat"), "wb") as fh:
+                fh.write(b"x")
+            app._set_level("alpha")
+            m = WorldsModal(app._list_worlds(), app._current_world())
+            app._world_rename(m, "alpha", "beta")
+            self.assertTrue(os.path.isdir(os.path.join(d, "beta")))
+            self.assertFalse(os.path.isdir(os.path.join(d, "alpha")))
+            self.assertEqual(app.config.get("level"), "beta")
+            # deleting the active world falls back to another / the default
+            app._world_add(m, "fresh")
+            self.assertEqual(app.config.get("level"), "fresh")
+            self.assertTrue(os.path.isdir(os.path.join(d, "fresh")))
+            app._world_delete(m, "fresh")
+            self.assertFalse(os.path.isdir(os.path.join(d, "fresh")))
+            self.assertEqual(app.config.get("level"), "beta")
+
+    def test_set_level_tracks_current_world(self):
+        with tempfile.TemporaryDirectory() as d:
+            app = self._app(d)
+            app.config.set("server_dir", d)
+            app.current_world = app._current_world()
+            self.assertEqual(app.current_world, "world")
+            app._set_level("survival")
+            self.assertEqual(app.current_world, "survival")
+            self.assertIn("header", app._dirty)
 
     def test_open_world_modal_seeds_from_properties(self):
         with tempfile.TemporaryDirectory() as d:
@@ -617,7 +673,7 @@ class TestFieldModal(unittest.TestCase):
             self.assertIsNone(app.modal)
 
     def test_ipban_uses_player_connection_ip(self):
-        from mcsadmin.tui import PlayerActions
+        from mcsadmin.tui import PlayerActions, PromptModal
 
         with tempfile.TemporaryDirectory() as d:
             app = self._app(d)
@@ -629,16 +685,51 @@ class TestFieldModal(unittest.TestCase):
                  "send_command": lambda self, cmd: sent.append(cmd)},
             )()
             m = PlayerActions("Steve")
+            app.modal = m
             app._run_player_action(m, "IP ban")
+            # a reason prompt opens instead of firing the command directly
+            self.assertIsInstance(app.modal, PromptModal)
+            self.assertIs(app.prev_modal, m)
+            app.modal.buf = "cheating"
+            app._prompt_submit(app.modal)
+            self.assertIn("ban-ip 192.168.1.5 cheating", sent)
+            # a blank reason still bans the IP, without a reason argument
+            app.modal = PlayerActions("Steve")
+            app._run_player_action(app.modal, "IP ban")
+            app._prompt_submit(app.modal)
             self.assertIn("ban-ip 192.168.1.5", sent)
-            # unknown IP -> no command, just a notification
+            # unknown IP -> no prompt, just a notification
             app.server = type(
                 "S",
                 (),
                 {"player_ips": {}, "send_command": lambda self, cmd: sent.append(cmd)},
             )()
             app._run_player_action(PlayerActions("Ghost"), "IP ban")
-            self.assertEqual(len(sent), 1)
+            self.assertIsNone(app.modal)
+            self.assertEqual(len(sent), 2)
+
+    def test_kick_and_ban_use_reason_prompt(self):
+        from mcsadmin.tui import PlayerActions, PromptModal
+
+        with tempfile.TemporaryDirectory() as d:
+            app = self._app(d)
+            sent = []
+            app.server = type(
+                "S",
+                (),
+                {"player_ips": {}, "send_command": lambda self, cmd: sent.append(cmd)},
+            )()
+            for action, verb in (("Kick player", "kick"), ("Ban player", "ban")):
+                m = PlayerActions("Steve")
+                app.modal = m
+                app._run_player_action(m, action)
+                self.assertIsInstance(app.modal, PromptModal)
+                self.assertIs(app.prev_modal, m)
+                app.modal.buf = "griefing"
+                app._prompt_submit(app.modal)
+            self.assertEqual(
+                sent, ["kick Steve griefing", "ban Steve griefing"]
+            )
 
     def test_bar_only_shows_fill(self):
         from mcsadmin.tui import App

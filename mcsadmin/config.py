@@ -26,6 +26,7 @@ from typing import Any, Dict, Optional
 DEFAULTS: Dict[str, Any] = {
     "server_dir": None,          # directory holding server.jar world etc.
     "version": None,             # selected Minecraft version id
+    "level": "world",            # active world folder (level-name in server.properties)
     "jar_url": None,             # downloaded jar URL (cached)
     "server_icon": None,         # source path of server-icon.png
     "java": {

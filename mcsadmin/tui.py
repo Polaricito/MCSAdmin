@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import curses
 import os
+import shutil
 import sys
 import threading
 import time
@@ -51,7 +52,7 @@ HELP_TEXT = [
     "  X ................ stop the server",
     "  R ................ restart the server",
     "  I ................ install the latest release build",
-    "  V ................ pick a version to install",
+    "  V ................ worlds (add / rename / delete / switch)",
     "  W ................ world options (difficulty, gamemode, pvp, …)",
     "  E ................ server settings (description / icon / RAM / cores)",
     "  H ................ show this screen",
@@ -124,6 +125,79 @@ class PlayerActions:
             "Kick player", "Ban player", "IP ban", "Cancel",
         ]
         self.sel = 0
+
+
+class PromptModal:
+    """Single free-text input: a label, an editable buffer, Enter submits.
+
+    ``on_submit`` receives the trimmed text (callback may also close/replace
+    the modal). Esc cancels back to the previous modal if there was one.
+    ``empty_ok`` controls whether Enter with an empty buffer is allowed.
+    ``submit`` is the label for the confirm button (default "send").
+    """
+
+    def __init__(
+        self,
+        title: str,
+        prompt: str,
+        on_submit,
+        empty_ok: bool = True,
+        submit: str = "send",
+    ) -> None:
+        self.title = title
+        self.prompt = prompt
+        self.buf = ""
+        self.on_submit = on_submit
+        self.empty_ok = empty_ok
+        self.submit = submit
+        self.sel = 0  # no list to select; kept for the shared draw path
+
+    def send_label(self) -> str:
+        return "[%s]" % self.submit
+
+
+class ConfirmModal:
+    """Small yes/no modal with a safe default (Cancel selected)."""
+
+    def __init__(self, title: str, message: str, on_confirm) -> None:
+        self.title = title
+        self.message = message
+        self.on_confirm = on_confirm
+        self.actions: List[str] = ["Cancel", "Delete"]
+        self.sel = 0  # Cancel is the default
+
+
+class WorldsModal:
+    """World selector: list of world folders, switch/add/rename/delete.
+
+    ``*`` marks the currently active world. Each world renders as a card;
+    clicking one selects it, and the bottom bar offers switch / rename /
+    delete / add. Enter switches too, and a/r/d start add/rename/delete.
+    """
+
+    def __init__(self, worlds: List[str], current: str) -> None:
+        self.worlds = worlds
+        self.current = current
+        self.sel = 0
+        if current in worlds:
+            self.sel = worlds.index(current)
+
+    def reload(self, worlds: List[str], current: str) -> None:
+        self.worlds = worlds
+        self.current = current
+        if not self.worlds:
+            self.sel = 0
+        elif self.sel >= len(self.worlds):
+            self.sel = len(self.worlds) - 1
+
+    def scroll_start(self, rows: int) -> int:
+        """First world index to display given ``rows`` visible cards."""
+        return max(0, min(self.sel, len(self.worlds) - 1) - rows + 1)
+
+    def hint(self, w: int) -> str:
+        return truncate(
+            "Enter switch · a add · r rename · d delete · Esc back", w - 2
+        )
 
 
 class WhitelistModal:
@@ -319,6 +393,7 @@ class App:
         self.install_progress = (0, 0)
         self.last_result = ""
         self.installed_ver: Optional[str] = None
+        self.current_world: str = "world"
 
         self.last_lines = ""
         self._quit_requested = False
@@ -342,7 +417,7 @@ class App:
     _IDLE_SLEEP = 0.03
     _STATS_INTERVAL = 0.8
     _MESSAGE_MS = 5.0
-    _HOTKEYS = frozenset("SXRIVWHEQ")  # all hotkeys are UPPERCASE
+    _HOTKEYS = frozenset("SXRIVWEHQ")  # all hotkeys are UPPERCASE
 
     def run(self) -> None:
         self.stdscr.keypad(True)
@@ -355,6 +430,7 @@ class App:
             pass
         server_dir = self.config.server_dir()
         self.installed_ver = read_installed_version(server_dir)
+        self.current_world = self._current_world()
         if self.installed_ver:
             self.log.append(
                 f"[mcsadmin] Minecraft {self.installed_ver} installed; "
@@ -486,7 +562,10 @@ class App:
         if ch == ord("I"):
             self._quick_install()
         elif ch == ord("V"):
-            self._open_version_modal()
+            if self._server_running():
+                self._notify("Stop server first.")
+            else:
+                self._open_worlds_modal()
         elif ch == ord("E"):
             if self._server_running():
                 self._notify("Stop server first.")
@@ -624,6 +703,32 @@ class App:
             return self._handle_field_key(m, ch)
         if isinstance(m, WhitelistModal):
             return self._handle_whitelist_key(m, ch)
+        if isinstance(m, PromptModal):
+            if ch == KEY_BACKSPACE:
+                m.buf = m.buf[:-1]
+            elif ch in (KEY_ENTER, 13):
+                self._prompt_submit(m)
+            elif ch in (KEY_ESCAPE,):
+                self._close_field_modal()
+            elif 32 <= ch < 127:
+                m.buf += chr(ch)
+            return True
+        if isinstance(m, ConfirmModal):
+            if ch == KEY_UP:
+                m.sel = max(0, m.sel - 1)
+            elif ch == KEY_DOWN:
+                m.sel = min(len(m.actions) - 1, m.sel + 1)
+            elif ch in (KEY_ENTER, 13):
+                if m.actions[m.sel] == "Delete":
+                    self.modal = None
+                    m.on_confirm()
+                else:
+                    self._close_field_modal()
+            elif ch in (KEY_ESCAPE,):
+                self._close_field_modal()
+            return True
+        if isinstance(m, WorldsModal):
+            return self._handle_worlds_key(m, ch)
         if ch in (KEY_ESCAPE,):
             self.modal = None
             return True
@@ -696,23 +801,47 @@ class App:
     def _run_player_action(self, m: PlayerActions, action: str) -> None:
         name = m.name
         if action.startswith("Kick"):
-            self.modal = None
-            self._notify(f"Kicking {name}…")
-            self.server.send_command(f"kick {name}")
+            self._reason_prompt(
+                "KICK PLAYER", f"Reason for kicking {name}:",
+                lambda reason: self._send_player_cmd("kick", name, reason),
+            )
         elif action.startswith("Ban"):
-            self.modal = None
-            self._notify(f"Banning {name}…")
-            self.server.send_command(f"ban {name}")
+            self._reason_prompt(
+                "BAN PLAYER", f"Reason for banning {name}:",
+                lambda reason: self._send_player_cmd("ban", name, reason),
+            )
         elif action.startswith("IP ban"):
-            self.modal = None
             ip = self.server.player_ips.get(name)
-            if ip:
-                self._notify(f"Banning {name} ({ip})…")
-                self.server.send_command(f"ban-ip {ip}")
-            else:
+            if not ip:
+                self.modal = None
                 self._notify(f"No connection IP known for {name}.")
+            else:
+                self._reason_prompt(
+                    "IP BAN", f"Reason for banning {ip}:",
+                    lambda reason, ip=ip: self._send_player_cmd("ban-ip", ip, reason),
+                )
         else:  # Cancel
             self.modal = None
+
+    def _prompt_submit(self, m: PromptModal) -> None:
+        """Send the current prompt buffer (shared by Enter and the send button)."""
+        value = m.buf.strip()
+        if not value and not m.empty_ok:
+            return
+        self.modal = None
+        m.on_submit(value)
+
+    def _reason_prompt(self, title, prompt, on_submit) -> None:
+        """Open a prompt for a kick/ban/IP-ban reason; Esc returns to the
+        player menu."""
+        self.prev_modal = self.modal
+        self.modal = PromptModal(title, prompt, on_submit)
+
+    def _send_player_cmd(self, verb, target, reason) -> None:
+        reason = (reason or "").strip()
+        cmd = verb + " " + target + (f" {reason}" if reason else "")
+        self._notify(f"Sent {cmd}")
+        self.server.send_command(cmd)
 
     def _open_whitelist_modal(self) -> None:
         self.prev_modal = self.modal  # keep the world options underneath
@@ -987,6 +1116,189 @@ class App:
         self._close_field_modal()
 
     # ------------------------------------------------------------------
+    # worlds (add / rename / delete / switch)
+    # ------------------------------------------------------------------
+    def _worlds_dir(self) -> str:
+        return self.config.server_dir()
+
+    def _list_worlds(self) -> List[str]:
+        """World folders under the server dir (folders holding a level.dat).
+
+        The currently configured level is always listed, even when it has no
+        level.dat yet (a brand-new empty world that only gets generated once
+        the server starts), so it can still be switched away from.
+        """
+        d = self._worlds_dir()
+        cur = self._current_world()
+        try:
+            names = [
+                n for n in os.listdir(d)
+                if os.path.isdir(os.path.join(d, n)) and not n.startswith(".")
+                and os.path.exists(os.path.join(d, n, "level.dat"))
+            ]
+        except OSError:
+            names = []
+        if cur and cur not in names and os.path.isdir(os.path.join(d, cur)):
+            names.append(cur)
+        return sorted(names)
+
+    def _current_world(self) -> str:
+        props = read_properties(
+            os.path.join(self.config.server_dir(), "server.properties")
+        )
+        return str(self.config.get("level") or props.get("level-name") or "world")
+
+    def _set_level(self, name: str) -> None:
+        """Record the active world in both config and server.properties."""
+        self.config.set("level", name)
+        world = dict(self.config.get("world") or {})
+        if "level-name" in world:  # never leave a stale override behind
+            del world["level-name"]
+            self.config.set("world", world)
+        self.config.save()
+        set_property(
+            os.path.join(self.config.server_dir(), "server.properties"),
+            "level-name",
+            name,
+        )
+        self.current_world = name
+        self._mark("header")
+
+    def _world_switch(self, m: WorldsModal, name: str) -> None:
+        """Switch the active world to ``name`` and close the Worlds menu."""
+        if name not in m.worlds:
+            self._notify(f"World '{name}' not found.")
+            return
+        if name != self._current_world():
+            self._set_level(name)
+            self._notify(f"Switched to world '{name}'.")
+        self.modal = None
+
+    def _open_worlds_modal(self) -> None:
+        self.prev_modal = self.modal
+        self.modal = WorldsModal(self._list_worlds(), self._current_world())
+
+    def _handle_worlds_key(self, m: WorldsModal, ch: int) -> bool:
+        if ch in (KEY_ESCAPE,):
+            self.modal = None
+        elif ch == KEY_UP:
+            m.sel = max(0, min(m.sel - 1, max(0, len(m.worlds) - 1)))
+        elif ch == KEY_DOWN:
+            m.sel = min(max(0, len(m.worlds) - 1), m.sel + 1)
+        elif ch in (KEY_ENTER, 13):
+            if m.worlds:
+                self._world_switch(m, m.worlds[m.sel])
+        elif ch in (ord("a"), ord("A")):
+            self._worlds_prompt_add()
+        elif ch in (ord("r"), ord("R")):
+            self._worlds_prompt_rename()
+        elif ch in (ord("d"), ord("D")):
+            self._worlds_confirm_delete()
+        return True
+
+    @staticmethod
+    def _safe_world_name(raw) -> Optional[str]:
+        name = (raw or "").strip()
+        if not name or name in (".", "..") or "/" in name or "\\" in name:
+            return None
+        if name.startswith("."):
+            return None
+        return name
+
+    def _worlds_prompt_add(self):
+        m = self.modal
+        self.prev_modal = m
+        self.modal = PromptModal(
+            " ADD WORLD ", "New world name:",
+            on_submit=lambda name: self._world_add(m, name),
+            submit="create",
+        )
+
+    def _world_add(self, m: WorldsModal, raw: str) -> None:
+        name = self._safe_world_name(raw)
+        if not name:
+            self._notify("Invalid world name.")
+            self.modal = m
+            return
+        d = os.path.join(self._worlds_dir(), name)
+        if os.path.exists(d):
+            self._notify(f"World '{name}' already exists.")
+            self.modal = m
+            return
+        os.makedirs(d, exist_ok=True)
+        self._set_level(name)
+        m.reload(self._list_worlds(), self._current_world())
+        self.modal = m
+        self._notify(f"World '{name}' created and selected.")
+
+    def _worlds_prompt_rename(self):
+        m = self.modal
+        old = m.worlds[m.sel] if m.worlds else ""
+        self.prev_modal = m
+        self.modal = PromptModal(
+            " RENAME WORLD ", f"New name for '{old}':",
+            on_submit=lambda name: self._world_rename(m, old, name),
+            submit="rename",
+        )
+
+    def _world_rename(self, m: WorldsModal, old: str, raw: str) -> None:
+        new = self._safe_world_name(raw)
+        if not old:
+            self._notify("No world selected.")
+            self.modal = m
+            return
+        if not new:
+            self._notify("Invalid world name.")
+            self.modal = m
+            return
+        if new == old:
+            self.modal = m
+            return
+        src = os.path.join(self._worlds_dir(), old)
+        dst = os.path.join(self._worlds_dir(), new)
+        if not os.path.isdir(src):
+            self._notify(f"World '{old}' not found.")
+            self.modal = m
+            return
+        if os.path.exists(dst):
+            self._notify(f"World '{new}' already exists.")
+            self.modal = m
+            return
+        os.replace(src, dst)
+        if self._current_world() == old:
+            self._set_level(new)
+        m.reload(self._list_worlds(), self._current_world())
+        self.modal = m
+        self._notify(f"World '{old}' renamed to '{new}'.")
+
+    def _worlds_confirm_delete(self):
+        m = self.modal
+        name = m.worlds[m.sel] if m.worlds else ""
+        if not name:
+            self._notify("No world selected.")
+            return
+        self.prev_modal = m
+        self.modal = ConfirmModal(
+            " DELETE WORLD ",
+            f"Delete world '{name}' permanently?",
+            on_confirm=lambda: self._world_delete(m, name),
+        )
+
+    def _world_delete(self, m: WorldsModal, name: str) -> None:
+        d = os.path.join(self._worlds_dir(), name)
+        if not os.path.isdir(d):
+            self._notify(f"World '{name}' not found.")
+            self.modal = m
+            return
+        shutil.rmtree(d)
+        remaining = self._list_worlds()
+        if self._current_world() == name:
+            self._set_level(remaining[0] if remaining else "world")
+        m.reload(remaining, self._current_world())
+        self.modal = m
+        self._notify(f"World '{name}' deleted.")
+
+    # ------------------------------------------------------------------
     # settings row rendering (shared by draw + hitmap)
     # ------------------------------------------------------------------
     def _settings_row(self, m: SettingsModal, i: int, w: int):
@@ -1056,8 +1368,6 @@ class App:
                 self.server.start()
         elif token == "install":
             self._quick_install()
-        elif token == "pick":
-            self._open_version_modal()
         elif token == "settings":
             if self._server_running():
                 self._notify("Stop server first.")
@@ -1068,6 +1378,51 @@ class App:
                 self._notify("Stop server first.")
             else:
                 self._open_world_modal()
+        elif token == "worlds":
+            if self._server_running():
+                self._notify("Stop server first.")
+            else:
+                self._open_worlds_modal()
+        elif token.startswith("worlds:select:"):
+            name = token.split(":", 2)[2]
+            m = self.modal
+            if isinstance(m, WorldsModal) and name in m.worlds:
+                m.sel = m.worlds.index(name)
+        elif token == "worlds:add":
+            m = self.modal
+            if isinstance(m, WorldsModal):
+                self._worlds_prompt_add()
+        elif token == "worlds:switch":
+            m = self.modal
+            if isinstance(m, WorldsModal) and m.worlds:
+                self._world_switch(m, m.worlds[m.sel])
+        elif token == "worlds:rename":
+            m = self.modal
+            if isinstance(m, WorldsModal) and m.worlds:
+                self._worlds_prompt_rename()
+        elif token == "worlds:delete":
+            m = self.modal
+            if isinstance(m, WorldsModal) and m.worlds:
+                self._worlds_confirm_delete()
+        elif token == "worlds:done":
+            if isinstance(self.modal, WorldsModal):
+                self.modal = None
+        elif token == "prompt:send":
+            m = self.modal
+            if isinstance(m, PromptModal):
+                self._prompt_submit(m)
+        elif token == "prompt:cancel":
+            if isinstance(self.modal, PromptModal):
+                self._close_field_modal()
+        elif token.startswith("confirm:"):
+            action = token.split(":", 1)[1]
+            m = self.modal
+            if isinstance(m, ConfirmModal):
+                if action == "delete":
+                    self.modal = None
+                    m.on_confirm()
+                else:
+                    self._close_field_modal()
         elif token == "help":
             self.log.extend(HELP_TEXT)
         elif token == "close":
@@ -1110,22 +1465,26 @@ class App:
             self.modal = PlayerActions(name)
         elif token.startswith("kick:"):
             name = token.split(":", 1)[1]
-            self.modal = None
-            self._notify(f"Kicking {name}…")
-            self.server.send_command(f"kick {name}")
+            self._reason_prompt(
+                "KICK PLAYER", f"Reason for kicking {name}:",
+                lambda reason: self._send_player_cmd("kick", name, reason),
+            )
         elif token.startswith("ban:"):
             name = token.split(":", 1)[1]
-            self.modal = None
-            self._notify(f"Banning {name}…")
-            self.server.send_command(f"ban {name}")
+            self._reason_prompt(
+                "BAN PLAYER", f"Reason for banning {name}:",
+                lambda reason: self._send_player_cmd("ban", name, reason),
+            )
         elif token.startswith("ipban:"):
             name = token.split(":", 1)[1]
-            self.modal = None
             ip = self.server.player_ips.get(name)
             if ip:
-                self._notify(f"Banning {name} ({ip})…")
-                self.server.send_command(f"ban-ip {ip}")
+                self._reason_prompt(
+                    "IP BAN", f"Reason for banning {ip}:",
+                    lambda reason, ip=ip: self._send_player_cmd("ban-ip", ip, reason),
+                )
             else:
+                self.modal = None
                 self._notify(f"No connection IP known for {name}.")
         elif token.startswith("whitelist-remove:"):
             name = token.split(":", 1)[1]
@@ -1401,6 +1760,16 @@ class App:
         if isinstance(m, PlayerActions):
             mh = min(len(m.actions) + 4, max(10, h - 6))
             mw = clamp(int(w * 0.4), 22, 40)
+        elif isinstance(m, PromptModal):
+            mh = 9
+            mw = clamp(int(w * 0.5), 34, 62)
+        elif isinstance(m, ConfirmModal):
+            mh = min(len(m.actions) + 4, max(10, h - 6))
+            mw = clamp(int(w * 0.4), 24, 44)
+        elif isinstance(m, WorldsModal):
+            mh = min(3 * min(4, len(m.worlds) or 1) + 4, max(14, h - 6))
+            mh = max(mh, 14)
+            mw = clamp(int(w * 0.55), 46, 66)
         elif isinstance(m, SettingsModal):
             mh = min(len(m.actions) + 4, max(10, h - 6))
             mw = clamp(int(w * 0.5), 30, 60)
@@ -1488,6 +1857,32 @@ class App:
                     self._hit(my + 1 + i, mx + 1, len(text) - 1, "field:" + str(idx))
                 text = " > done" if m.sel == len(m.fields) else "   done"
                 self._hit(my + rows + 1, mx + 1, len(text) - 1, "field:done")
+            elif isinstance(m, PromptModal):
+                bar = my + (_mh - 2)
+                x = mx + 2
+                self._hit(bar, x, len(m.send_label()), "prompt:send")
+                x += len(m.send_label()) + 4
+                self._hit(bar, x, len("[cancel]"), "prompt:cancel")
+            elif isinstance(m, ConfirmModal):
+                for i, label in enumerate(m.actions):
+                    self._hit(my + 3 + i, mx + 1, len(truncate(label, _mw - 4)),
+                              "confirm:" + label.lower())
+            elif isinstance(m, WorldsModal):
+                shown = max(1, (_mh - 4) // 3)
+                start = m.scroll_start(shown)
+                y = 1
+                for i in range(shown):
+                    idx = start + i
+                    if idx >= len(m.worlds):
+                        break
+                    self._hit(my + y, mx + 1, _mw - 2,
+                              "worlds:select:" + m.worlds[idx])
+                    y += 3
+                bar = my + (_mh - 2)
+                x = mx + 1
+                for label, token in self._worlds_bar():
+                    self._hit(bar, x, len(label), token)
+                    x += len(label) + 1
             else:
                 items = m.filtered()
                 visible = max(0, _mh - 5)
@@ -1520,7 +1915,8 @@ class App:
             self._last_console = anchor
             self._mark("console")
 
-        sig = (tuple(sorted(self.server.players)), self.server.max_players)
+        sig = (tuple(sorted(self.server.players)), self.server.max_players,
+               self.server.status)
         if sig != self._last_players:
             self._last_players = sig
             self._mark("players")
@@ -1530,8 +1926,8 @@ class App:
             self.server.pid,
             not not self.server.started_at,
             self.server.rcon_ready,
-            self.public_ip,
             self.server.max_players,
+            self.current_world,
         )
         full_sig = (st_sig, self._footer_text(), self.install_active)
         if full_sig != self._last_status:
@@ -1595,19 +1991,20 @@ class App:
         try:
             self.stdscr.noutrefresh()
             self.stdscr.addstr(0, 0, " " * w, theme.attr("header"))
-            ip = f"ip={self.public_ip or '-'}"
             status_text = f"{status.upper():>8} pid={self.server.pid or self.ext_pid or '-'}"
-            right_w = len(ip) + 1 + len(status_text)
+            right_w = len(status_text)
             left_w = max(0, w - right_w - 2)
             title = f" {APP_TITLE} v{__version__}"
-            if self.installed_ver and left_w > len(title) + len(self.installed_ver) + 4:
-                title += f"  mc={self.installed_ver}"
+            extra = []
+            if self.installed_ver:
+                extra.append(f"mc={self.installed_ver}")
+            extra.append(f"w={self.current_world}")
+            extra = "  " + " ".join(extra)
+            if left_w > len(title) + len(extra):
+                title += extra
             self.stdscr.addstr(0, 0, truncate(title, left_w), theme.attr("header"))
-            # the IP sits in the white header box like the title/version, with
-            # the status + pid (their own attribute) after it
             x = max(0, w - right_w)
-            self.stdscr.addstr(0, x, ip, theme.attr("header"))
-            self.stdscr.addstr(0, x + len(ip) + 1, status_text, st_attr)
+            self.stdscr.addstr(0, x, status_text, st_attr)
             self.stdscr.noutrefresh()
         except curses.error:
             pass
@@ -1764,6 +2161,23 @@ class App:
         v = truncate(value, content)
         return " " * ((content - len(v)) // 2) + v
 
+    @staticmethod
+    def _net_row(left: str, right: str, w: int) -> str:
+        """One resources-bottom row: ``left`` at the left edge, ``right``
+        right-aligned (e.g. ``ip      14:32``)."""
+        content = max(1, w - 2)
+        r = truncate(str(right), max(1, content - 8))
+        l = truncate(str(left), max(1, content - len(r) - 1))
+        gap = max(1, content - len(l) - len(r))
+        return l + " " * gap + r
+
+    def _game_port(self) -> int:
+        cfg = getattr(self, "config", None)
+        try:
+            return int(cfg.get("gameport") or 25565) if cfg else 25565
+        except (TypeError, ValueError):
+            return 25565
+
     def _draw_stats(self) -> None:
         win = self._panes.get("stats")
         if win is None:
@@ -1784,9 +2198,9 @@ class App:
             if self.server.started_at
             else None
         )
-        # reserve the bottom two content rows for the uptime block:
-        #   15:48        <- value on top
-        #   Uptime       <- label underneath
+        # reserve the bottom two content rows for the network/uptime block:
+        #   ip      14:32   <- IP on the left, uptime value on the right
+        #   25565   Uptime   <- port on the left, "Uptime" label on the right
         uptime_rows = 2 if uptime else 0
         content_rows = max(1, sh - 2)
         top_limit = max(0, content_rows - uptime_rows)
@@ -1825,10 +2239,15 @@ class App:
 
         if uptime and sh >= 4:
             label_y = sh - 2  # last content row
-            self._winline(win, label_y, 1, self._centered("Uptime", w),
-                          theme.attr("dim"))
-            self._winline(win, label_y - 1, 1, self._centered(uptime, w),
+            ip = getattr(self, "public_ip", None) or "-"
+            # IP + uptime value on top, port + "Uptime" label underneath,
+            # with the network info left-aligned and the uptime on the right
+            self._winline(win, label_y - 1, 1,
+                          self._net_row(f"IP: {ip}", uptime, w),
                           theme.attr("stats"))
+            self._winline(win, label_y, 1,
+                          self._net_row(f"PORT: {self._game_port()}", "Uptime", w),
+                          theme.attr("dim"))
         win.noutrefresh()
 
     def _footer_buttons(self) -> List[tuple]:
@@ -1845,8 +2264,8 @@ class App:
             ("[S] start", "start"),
             ("[I] install", "install"),
             ("[E] settings", "settings"),
+            ("[V] worlds", "worlds"),
             ("[W] world", "world"),
-            ("[V] pick version", "pick"),
             ("[H] help", "help"),
             ("[Q] quit", "quit"),
         ]
@@ -1929,6 +2348,23 @@ class App:
             title = m.title
             mh = min(len(m.fields) + 5, max(14, h - 8))
             mw = clamp(int(w * 0.5), 34, 56)
+            sel = m.sel
+        elif isinstance(m, PromptModal):
+            title = m.title
+            mh = 9
+            mw = clamp(int(w * 0.5), 34, 62)
+            sel = m.sel
+        elif isinstance(m, ConfirmModal):
+            title = m.title
+            items = m.actions
+            mh = min(len(items) + 4, max(10, h - 6))
+            mw = clamp(int(w * 0.4), 24, 44)
+            sel = m.sel
+        elif isinstance(m, WorldsModal):
+            title = " WORLDS "
+            mh = min(3 * min(4, len(m.worlds) or 1) + 4, max(14, h - 6))
+            mh = max(mh, 14)
+            mw = clamp(int(w * 0.55), 46, 66)
             sel = m.sel
         else:
             title = " SELECT VERSION "
@@ -2031,6 +2467,20 @@ class App:
             text = " > done" if is_done else "   done"
             self._winline(win, rows + 1, 1, text, attr)
             self._hit(my + rows + 1, mx + 1, len(text) - 1, "field:done")
+        elif isinstance(m, PromptModal):
+            self._draw_prompt_modal(win, m, mh, mw)
+        elif isinstance(m, ConfirmModal):
+            if m.message:
+                self._winline(win, 1, 2, truncate(m.message, mw - 4),
+                              theme.attr("status_warn"))
+            for i, label in enumerate(m.actions):
+                is_sel = i == sel
+                attr = theme.attr("input_accent" if is_sel else "input",
+                                  curses.A_BOLD if is_sel else 0)
+                text = (" > " if is_sel else "   ") + truncate(label, mw - 4)
+                self._winline(win, 3 + i, 1, text, attr)
+        elif isinstance(m, WorldsModal):
+            self._draw_worlds_modal(win, m, mh, mw)
         elif m.loading:
             self._winline(win, mh // 2, 1, "Fetching versions…", theme.attr("dim"))
         elif m.error:
@@ -2058,6 +2508,79 @@ class App:
                 self._hit(my + 2 + i, mx + 1, len(text) - 1, "vinstall:" + items[idx])
         win.noutrefresh()
         self._modal_win = win
+
+    def _world_card_lines(self, world: str, active: bool, cw: int):
+        """Three lines (top, middle, bottom) for one world card.
+
+        ``cw`` is the card's width. The name rides on the top border like a
+        pane title; ``*`` marks the active world.
+        """
+        name = truncate(world, max(1, cw - 6))
+        mark = " * " if active else "   "
+        pad = max(1, cw - 3 - len(name) - len(mark))
+        top = "┌ " + name + mark + "─" * pad + "┐"
+        mid = "│" + " " * (cw - 2) + "│"
+        bot = "└" + "─" * (cw - 2) + "┘"
+        return top, mid, bot
+
+    @staticmethod
+    def _worlds_bar() -> List[tuple]:
+        """(label, token) pairs for the Worlds bottom action bar."""
+        return [
+            ("[add]", "worlds:add"),
+            ("[switch]", "worlds:switch"),
+            ("[rename]", "worlds:rename"),
+            ("[del]", "worlds:delete"),
+            ("[done]", "worlds:done"),
+        ]
+
+    def _draw_prompt_modal(self, win, m: PromptModal, mh: int, mw: int) -> None:
+        bw = max(8, mw - 8)  # input-box width
+        inner = bw - 2       # editable text width
+        self._winline(win, 1, 2, truncate(m.prompt, mw - 4), theme.attr("input"))
+        self._winline(win, 2, 2, "┌" + "─" * (bw - 2) + "┐", theme.attr("input"))
+        end = (m.buf + "_")[:inner].ljust(inner)
+        self._winline(win, 3, 2, "│" + end + "│",
+                      theme.attr("input_accent", curses.A_BOLD))
+        self._winline(win, 4, 2, "└" + "─" * (bw - 2) + "┘", theme.attr("input"))
+        self._winline(win, 5, 2, "Enter confirms · Esc cancels", theme.attr("dim"))
+        bar = mh - 2
+        x = 2
+        self._winline(win, bar, x, m.send_label(),
+                      theme.attr("input_accent", curses.A_BOLD))
+        x += len(m.send_label()) + 4
+        self._winline(win, bar, x, "[cancel]",
+                      theme.attr("input_accent", curses.A_BOLD))
+
+    def _draw_worlds_modal(self, win, m: WorldsModal, mh: int, mw: int) -> None:
+        shown = max(1, (mh - 4) // 3)
+        start = m.scroll_start(shown)
+        cw = mw - 4
+        y = 1
+        for i in range(shown):
+            idx = start + i
+            if idx >= len(m.worlds):
+                break
+            world = m.worlds[idx]
+            attr = theme.attr("input_accent" if idx == m.sel else "dim",
+                              curses.A_BOLD if idx == m.sel else 0)
+            top, mid, bot = self._world_card_lines(
+                world, world == m.current, cw
+            )
+            self._winline(win, y, 2, truncate(top, mw - 4), attr)
+            self._winline(win, y + 1, 2, truncate(mid, mw - 4), attr)
+            self._winline(win, y + 2, 2, truncate(bot, mw - 4), attr)
+            y += 3
+        hint = "Enter switch · a add · r rename · d delete"
+        if len(m.worlds) > shown:
+            hint += " · ↑ scroll"
+        self._winline(win, mh - 3, 2, truncate(hint, mw - 4), theme.attr("dim"))
+        bar = mh - 2
+        x = 1
+        for label, _token in self._worlds_bar():
+            self._winline(win, bar, x, truncate(label, mw - 2),
+                          theme.attr("input_accent", curses.A_BOLD))
+            x += len(label) + 1
 
     def _draw_small(self) -> None:
         try:

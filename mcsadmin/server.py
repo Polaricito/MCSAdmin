@@ -178,6 +178,7 @@ class ServerManager:
         defaults = {
             "server-port": str(self.config.get("gameport", 25565)),
             "motd": self.config.get("motd", "MCSAdmin managed server"),
+            "level-name": str(self.config.get("level") or "world"),
             "online-mode": "true",
             "spawn-protection": "0",
             "view-distance": "10",
