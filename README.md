@@ -40,6 +40,14 @@ checkout.
 - A Java runtime for the server (auto-installed with `--with-java`)
 - A terminal that supports 256 colors (`TERM=xterm-256color` etc.)
 
+## Dependencies
+
+- Python 3.8+ (only the standard library is used — no third-party packages)
+- A terminal emulator that supports 256 colors and curses (GNOME Terminal,
+  Konsole, kitty, Alacritty, tmux/screen, or a plain Linux TTY)
+- No third-party Python packages; only the standard library (`curses`,
+  `subprocess`, `threading`, `json`, …)
+
 ## Install
 
 ```sh
