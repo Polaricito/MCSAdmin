@@ -1,4 +1,4 @@
-# MCSAdmin (MineCraft Server Admin)
+# MCSAdmin (MineCraft Server Administrator)
 
 A portable, terminal-based Minecraft server manager with a curses TUI.
 
